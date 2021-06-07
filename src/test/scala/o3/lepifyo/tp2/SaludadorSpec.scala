@@ -1,4 +1,4 @@
-package o3
+package o3.lepifyo.tp2
 
 import org.scalatest.funspec.AnyFunSpec
 import org.scalatest.matchers.should.Matchers
