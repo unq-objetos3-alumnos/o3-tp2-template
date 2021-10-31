@@ -42,9 +42,11 @@ class ParserSpec extends AnyFunSpec with Matchers {
     val lambda = (parametros: List[String], cuerpo: List[Expresion]) => ("lambda", parametros, cuerpo)
     val aplicacion = (funcion: Expresion, argumentos: List[Expresion]) => ("aplicacion", funcion, argumentos)
 
+    implicit def int2Numero: Int => Expresion = numero
+
     describe("función faltante") {
       it("numero") {
-        an [ParserLepifyo.MissingFunctionError] should be thrownBy {
+        an[ParserLepifyo.MissingFunctionError] should be thrownBy {
           val parser = new ParserLepifyo[Programa, Expresion]()
           parser.parsear("12")
         }
@@ -79,7 +81,7 @@ class ParserSpec extends AnyFunSpec with Matchers {
       it("números literales") {
         val ast = parser.parsear("12")
 
-        ast should equal(programa(numero(12)))
+        ast should equal(programa(12))
       }
 
       it("sumas de números") {
@@ -221,7 +223,7 @@ class ParserSpec extends AnyFunSpec with Matchers {
       }
 
       it("los identificadores no pueden empezar con números") {
-        an [ParserLepifyo.ParseError] should be thrownBy {
+        an[ParserLepifyo.ParseError] should be thrownBy {
           parser.parsear("let 123 = 12")
         }
       }
@@ -337,7 +339,7 @@ class ParserSpec extends AnyFunSpec with Matchers {
       it("print dentro de if") {
         val ast = parser.parsear("if(2 > 1) then printLn(1)")
 
-        ast should equal(programa(si(mayor(2,1), List(aplicacion(variable("printLn"), List(1))), List())))
+        ast should equal(programa(si(mayor(2, 1), List(aplicacion(variable("printLn"), List(1))), List())))
       }
 
       it("string vacío") {
@@ -531,6 +533,48 @@ class ParserSpec extends AnyFunSpec with Matchers {
 
         ast should equal(programa(
           variable("\uD83D\uDE04\uD83D\uDD96\uD83C\uDFFB")
+        ))
+      }
+
+      it("se pueden aplicar literales") {
+        val ast = parser.parsear("2()")
+
+        ast should equal(programa(
+          aplicacion(2, List())
+        ))
+      }
+
+      it("los saltos de línea delimitan instrucciones") {
+        val ast = parser.parsear("f\n\t(() -> 1)()")
+
+        ast should equal(programa(
+          variable("f"),
+          aplicacion(lambda(List(), List(1)), List())
+        ))
+      }
+
+      it("pueden haber saltos de línea entre la definición de una variable y su valor inicial") {
+        val ast = parser.parsear("let x =\n\t2")
+
+        ast should equal(programa(
+          declaracionVariable("x", 2),
+        ))
+      }
+
+      it("pueden haber saltos de línea entre la asignación a una variable y el valor nuevo") {
+        val ast = parser.parsear("let x = 2\nx =\n\t3")
+
+        ast should equal(programa(
+          declaracionVariable("x", 2),
+          asignacion("x", 3)
+        ))
+      }
+
+      it("pueden haber espacios además de saltos de línea después de un operador o de una declaración de variable/asignación") {
+        val ast = parser.parsear("let x =\n \n\t2")
+
+        ast should equal(programa(
+          declaracionVariable("x", 2)
         ))
       }
     }
