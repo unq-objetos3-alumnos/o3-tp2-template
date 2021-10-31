@@ -2,10 +2,10 @@ package o3.lepifyo.parser
 
 import o3.lepifyo.parser.ParserLepifyo.{MissingFunctionError, ParseError}
 
+import scala.util.matching.Regex
 import scala.util.parsing.combinator._
 
-case class ParserLepifyo[TPrograma, TExpresion]
-(
+case class ParserLepifyo[TPrograma, TExpresion](
   programa: List[TExpresion] => TPrograma = { _: List[TExpresion] => throw MissingFunctionError("programa") },
   numero: Int => TExpresion = { _: Int => throw MissingFunctionError("numero") },
   booleano: Boolean => TExpresion = { _: Boolean => throw MissingFunctionError("booleano") },
@@ -28,22 +28,23 @@ case class ParserLepifyo[TPrograma, TExpresion]
   lambda: (List[String], List[TExpresion]) => TExpresion = { (_: List[String], _: List[TExpresion]) => throw MissingFunctionError("lambda") },
   aplicacion: (TExpresion, List[TExpresion]) => TExpresion = { (_: TExpresion, _: List[TExpresion]) => throw MissingFunctionError("aplicacion") }
 ) extends RegexParsers {
+  
+  protected override val whiteSpace: Regex = """\h+""".r
+  
   def parsear(textoPrograma: String): TPrograma = {
+    def parserEspacios: Parser[String] = """\s*""".r
     def parserNumero: Parser[TExpresion] = """[0-9]+""".r ^^ { n => numero(n.toInt) }
-
     def parserBooleano: Parser[TExpresion] = "true" ^^^ booleano(true) | "false" ^^^ booleano(false)
-
-    def parserString: Parser[TExpresion] =
-      """"\s*""".r ~ """(\\\\|\\"|[^"])*""".r <~ "\"" ^^ {
-        // Consumir los espacios del inicio (con la primera regex) es necesario porque si usáramos ~> descartaría
-        // los espacios al inicio del string
-        case inicioConEspacios ~ restoDelString =>
-          string(
-            (inicioConEspacios.drop(1) + restoDelString)
-              .replace("\\\"", "\"")
-              .replace("\\\\", "\\")
-          )
-      }
+    def parserString: Parser[TExpresion] = """"\s*""".r ~ """(\\\\|\\"|[^"])*""".r <~ "\"" ^^ {
+      // Consumir los espacios del inicio (con la primera regex) es necesario porque si usáramos ~> descartaría
+      // los espacios al inicio del string
+      case inicioConEspacios ~ restoDelString =>
+        string(
+          (inicioConEspacios.drop(1) + restoDelString)
+            .replace("\\\"", "\"")
+            .replace("\\\\", "\\")
+        )
+    }
 
     def parserIdentificador: Parser[String] = {
       val emoji = """[\p{block=Emoticons}\p{block=Miscellaneous Symbols and Pictographs}]"""
@@ -59,51 +60,53 @@ case class ParserLepifyo[TPrograma, TExpresion]
 
     def parserLambda: Parser[TExpresion] =
       ((("(" ~> repsep(parserIdentificador, ",") <~ ")") | parserIdentificador ^^ (List(_))) <~ "->") ~
-        (("{" ~> parserInstruccion.* <~ "}") | (parserExpresion ^^ (List(_)))) ^^ {
-        case parametros ~ cuerpo => lambda(parametros, cuerpo)
-      }
-
+        parserBloque ^^ {
+          case parametros ~ cuerpo => lambda(parametros, cuerpo)
+        }
     def parserAplicacion: Parser[TExpresion] =
       parserLiteral ~ ("(" ~> repsep(parserExpresion, ",") <~ ")").+ ^^ {
-        case funcion ~ aplicaciones => aplicaciones.foldLeft(funcion)(aplicacion)
-      }
+      case funcion ~ aplicaciones => aplicaciones.foldLeft(funcion)(aplicacion)
+    }
 
     def parserFactor: Parser[TExpresion] = parserAplicacion | parserLiteral
 
-    def parserTermino = chainl1(parserFactor, "*" ^^^ multiplicacion | "/" ^^^ division)
+    def parserTermino = chainl1(parserFactor, parserOperadores("*" -> multiplicacion, "/" -> division))
 
-    def parserMiembros = chainl1(parserTermino, "+" ^^^ suma | "-" ^^^ resta)
+    def parserOperadores(operadores: (String, (TExpresion, TExpresion) => TExpresion)*) =
+      operadores.map {
+        case (simboloOperador, constructorOperacion) =>
+          simboloOperador <~ parserEspacios ^^^ constructorOperacion
+      }.reduce(_ | _)
 
-    def parserConcatenacion = chainl1(parserMiembros, "++" ^^^ concatenacion)
+    def parserMiembros = chainl1(parserTermino, parserOperadores("+" -> suma, "-" -> resta))
 
-    def parserMiembroDesigualdad = chainl1(parserConcatenacion,
-      ">=" ^^^ mayorIgual |
-        "<=" ^^^ menorIgual |
-        ">" ^^^ mayor |
-        "<" ^^^ menor
+    def parserConcatenacion = chainl1(parserMiembros, parserOperadores("++" -> concatenacion))
+
+    def parserMiembroDesigualdad = chainl1(
+      parserConcatenacion,
+      parserOperadores(">=" -> mayorIgual, "<=" -> menorIgual, ">" -> mayor, "<" -> menor)
     )
 
-    def parserExpresion = parserLambda | parserIf | chainl1(parserMiembroDesigualdad, "==" ^^^ igual | "!=" ^^^ distinto)
-
-    def parserDeclaracionVariables = ("let " ~> parserIdentificador <~ "=") ~ parserExpresion ^^ {
+    def parserExpresion = parserLambda | parserIf |
+      chainl1(parserMiembroDesigualdad, parserOperadores("==" -> igual, "!=" -> distinto))
+    
+    def parserDeclaracionVariables = ("let " ~> parserIdentificador <~ "=" <~ parserEspacios) ~ parserExpresion ^^ {
       case identificador ~ expresion => declaracionVariable(identificador, expresion)
     }
-
-    def parserAsignacion = (parserIdentificador <~ "=") ~ parserExpresion ^^ {
+    def parserAsignacion = (parserIdentificador <~ "=" <~ parserEspacios) ~ parserExpresion ^^ {
       case identificador ~ expresion => asignacion(identificador, expresion)
     }
 
     def parserInstruccion = parserDeclaracionVariables | parserAsignacion | parserExpresion
-
-    def parserBloque = "{" ~> parserInstruccion.* <~ "}" | (parserInstruccion ^^ {
-      List(_)
-    })
+    def parserBloque = "{" ~> parserInstrucciones <~ "}" | (parserInstruccion ^^ { List(_) })
 
     def parserIf: Parser[TExpresion] = ("if" ~> parserExpresion <~ "then") ~ parserBloque ~ ("else" ~> parserBloque).? ^^ {
       case cond ~ pos ~ neg => si(cond, pos, neg.getOrElse(List()))
     }
 
-    def parserPrograma = parserInstruccion.* ^^ programa
+    def parserInstrucciones = parserEspacios ~> (parserInstruccion <~ parserEspacios).*  <~ parserEspacios
+
+    def parserPrograma = parserInstrucciones ^^ programa
 
     parseAll(parserPrograma, textoPrograma) match {
       case Success(matched, _) => matched
@@ -115,6 +118,5 @@ case class ParserLepifyo[TPrograma, TExpresion]
 
 object ParserLepifyo {
   case class ParseError(message: String) extends RuntimeException(message)
-
   case class MissingFunctionError(fn: String) extends RuntimeException("Falta especificar una función para: " + fn)
 }
